@@ -3,19 +3,26 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { createReportBundle } from "@oh-my-pi/pi-coding-agent/debug/report-bundle";
-import { getConfigRootDir, getLogsDir, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
+import {
+	__resetDirsFromEnvForTests,
+	getConfigRootDir,
+	getLogsDir,
+	removeWithRetries,
+	setAgentDir,
+} from "@oh-my-pi/pi-utils";
 
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
-const originalXdgStateHome = process.env.XDG_STATE_HOME;
+const originalConfigRoot = process.env.PI_CONFIG_ROOT;
 const fallbackAgentDir = path.join(getConfigRootDir(), "agent");
 let cleanupRoot: string | undefined;
 
 afterEach(async () => {
-	if (originalXdgStateHome === undefined) {
-		delete process.env.XDG_STATE_HOME;
+	if (originalConfigRoot === undefined) {
+		delete process.env.PI_CONFIG_ROOT;
 	} else {
-		process.env.XDG_STATE_HOME = originalXdgStateHome;
+		process.env.PI_CONFIG_ROOT = originalConfigRoot;
 	}
+	__resetDirsFromEnvForTests();
 	if (originalAgentDir) {
 		setAgentDir(originalAgentDir);
 	} else {
@@ -31,10 +38,11 @@ afterEach(async () => {
 describe("report bundle logs", () => {
 	it("collects every same-day PID log, not only the current process", async () => {
 		cleanupRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-report-logs-"));
-		const xdgStateHome = path.join(cleanupRoot, "state");
-		await fs.mkdir(path.join(xdgStateHome, "omp"), { recursive: true });
-		process.env.XDG_STATE_HOME = xdgStateHome;
-		setAgentDir(fallbackAgentDir);
+		// Pin the config root rather than `XDG_STATE_HOME`: XDG is macOS/Linux-only,
+		// so the Windows run read and wrote the real `~/.omp/logs` and left every
+		// generated bundle in the real `~/.omp/reports`.
+		process.env.PI_CONFIG_ROOT = path.join(cleanupRoot, "root");
+		__resetDirsFromEnvForTests();
 
 		const logsDir = getLogsDir();
 		await fs.mkdir(logsDir, { recursive: true });

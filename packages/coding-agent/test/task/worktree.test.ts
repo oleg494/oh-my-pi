@@ -18,7 +18,13 @@ import {
 } from "@oh-my-pi/pi-coding-agent/task/worktree";
 import * as natives from "@oh-my-pi/pi-natives";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
-import { removeWithRetries, setWorktreesDir } from "@oh-my-pi/pi-utils";
+import {
+	getBaseConfigRoot,
+	getWorktreesDir,
+	pathIsWithin,
+	removeWithRetries,
+	setWorktreesDir,
+} from "@oh-my-pi/pi-utils";
 
 const tempDirs: string[] = [];
 
@@ -51,7 +57,41 @@ afterEach(async () => {
 	vi.restoreAllMocks();
 	await Promise.all(tempDirs.splice(0).map(dir => removeWithRetries(dir)));
 });
+
+/**
+ * Every isolation sandbox in this file belongs under a temp root. The default
+ * resolution is `~/.omp/wt`, so a test that creates one without relocating the
+ * base leaves its worktree directory and `.omp-isolation-owner.json` marker in
+ * the real user config root (and `omp worktree clear` then has to scan them).
+ *
+ * `OMP_WORKTREE_DIR` outranks the `setWorktreesDir` override, so the per-test
+ * overrides below still win after deleting it, and their save/restore dance
+ * puts this pin back for the tests that follow.
+ */
+let worktreeRoot = "";
+let savedWorktreeDirEnv: string | undefined;
+
+beforeAll(async () => {
+	worktreeRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-worktree-root-"));
+	savedWorktreeDirEnv = process.env.OMP_WORKTREE_DIR;
+	process.env.OMP_WORKTREE_DIR = worktreeRoot;
+});
+
+afterAll(async () => {
+	if (savedWorktreeDirEnv === undefined) delete process.env.OMP_WORKTREE_DIR;
+	else process.env.OMP_WORKTREE_DIR = savedWorktreeDirEnv;
+	await removeWithRetries(worktreeRoot);
+});
+
 describe("worktree isolation helpers", () => {
+	it("resolves every isolation sandbox inside this file's temp root", () => {
+		const base = getWorktreesDir();
+		expect(pathIsWithin(worktreeRoot, base)).toBe(true);
+		// The default base is `~/.omp/wt`: a sandbox (and its
+		// `.omp-isolation-owner.json` marker) must never land in the real profile.
+		expect(pathIsWithin(getBaseConfigRoot(), base)).toBe(false);
+	});
+
 	it("returns platform-specific null path for git --no-index diffs", () => {
 		const expected = process.platform === "win32" ? "NUL" : "/dev/null";
 		expect(getGitNoIndexNullPath()).toBe(expected);

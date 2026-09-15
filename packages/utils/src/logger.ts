@@ -14,8 +14,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { isPromise } from "node:util/types";
-import { getLogsDir } from "./dirs";
+import { getConfigDirName, getLogsDir, pathIsWithin } from "./dirs";
 import { RotatingFileSink } from "./logger/rotating-file";
+import { isBunTestRuntime } from "./test-runtime";
 import { drainModuleLoadEvents } from "./timing-buffer";
 /** Severity names accepted by the centralized logger. */
 export type LogLevel = "error" | "warn" | "info" | "debug";
@@ -32,6 +33,13 @@ export interface LogEvent {
 export type LogSink = (event: LogEvent) => void;
 
 const logSinks = new Set<LogSink>();
+
+// User home anchored at module load, mirroring `RESOLVER_HOME` in dirs.ts: it
+// stays stable across test mocks of `os.homedir()` (a test that re-points home
+// at a temp dir must still be recognized as pointing at a test-owned root).
+// Used only to decide whether the default sink would land in the *real*
+// profile.
+const LOGGER_REAL_HOME = os.homedir();
 
 /** Register an out-of-band log sink and return a disposer. */
 export function registerLogSink(sink: LogSink): () => void {
@@ -276,8 +284,24 @@ interface LocalTransports {
 let activeTransports: LocalTransports | undefined;
 
 function buildTransports(opts: { console?: boolean; file?: boolean | string }): LocalTransports {
+	// A test process must not create the default sink in the real user config
+	// root. The suite spawns thousands of processes and every one that emits a
+	// record — or merely touches the logger — would otherwise plant a
+	// pid-labeled log plus an audit breadcrumb in the user's `~/.omp/logs` and
+	// prune the logs retained there. Only the dir-less default
+	// (`transportOpts.file === true` targeting the unredirected root) is
+	// dropped: `setTransports({ file: <dir> })` and a redirected root
+	// (`PI_CONFIG_ROOT`, XDG) keep their sink, and real runs are unaffected
+	// because `isBunTestRuntime()` is false for them.
+	const defaultSinkInRealRoot =
+		opts.file === true &&
+		isBunTestRuntime() &&
+		pathIsWithin(path.join(LOGGER_REAL_HOME, getConfigDirName()), getLogsDir());
 	return {
-		file: opts.file ? makeFileTransport(typeof opts.file === "string" ? opts.file : undefined) : undefined,
+		file:
+			opts.file && !defaultSinkInRealRoot
+				? makeFileTransport(typeof opts.file === "string" ? opts.file : undefined)
+				: undefined,
 		console: opts.console === true,
 	};
 }

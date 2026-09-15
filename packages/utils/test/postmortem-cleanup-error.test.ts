@@ -18,7 +18,12 @@ async function runPostmortemProbe(
 			cwd: process.cwd(),
 			stdout: "pipe",
 			stderr: "pipe",
-			env: { ...process.env, OMP_AGENT_DIR: join(root, "agent") },
+			// The probe crashes on purpose, so it logs: pin the config root to keep
+			// its log and audit breadcrumb inside this fixture instead of the real
+			// `~/.omp/logs`. (`OMP_AGENT_DIR` used to sit here but nothing reads it,
+			// and the agent dir would not move the logs dir — that derives from the
+			// config root.)
+			env: { ...process.env, PI_CONFIG_ROOT: join(root, "root") },
 		});
 		// Process-level regressions can hang the child; the watchdog bounds the fixture without slowing
 		// green runs (the race resolves on exit). Generous deadline: a cold bun spawn transpiling the

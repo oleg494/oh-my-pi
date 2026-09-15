@@ -377,3 +377,87 @@ test("root and direct source entry points expose identical public logger functio
 		],
 	});
 });
+
+/**
+ * The default file sink writes a pid-labeled log plus an audit breadcrumb and
+ * schedules retention pruning. A test process that resolves its config root to
+ * the real user profile would therefore litter `~/.omp/logs` (and prune the
+ * user's retained logs) every time any test emits a record. The suite runs
+ * every process with `PI_TEST_RUNTIME=1`, so the default sink must stay off the
+ * real root — while an explicitly relocated sink or a redirected root keeps
+ * working normally.
+ */
+describe("default log sink against the real config root", () => {
+	const probePath = path.join(fixtureDir, "logger-default-sink-probe.ts");
+
+	interface SinkProbeResult {
+		readonly home: string;
+		readonly redirectedRoot: string | undefined;
+		readonly logsDir: string;
+		readonly files: string[];
+	}
+
+	async function runSinkProbe(
+		overrides: Record<string, string | undefined>,
+		options: { redirectRoot?: boolean } = {},
+	): Promise<SinkProbeResult> {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-logger-default-sink-"));
+		roots.push(root);
+		const home = path.join(root, "home");
+		const redirectedRoot = options.redirectRoot ? path.join(root, "redirected") : undefined;
+		const reportPath = path.join(root, "report.json");
+		const env: Record<string, string | undefined> = {
+			...process.env,
+			HOME: home,
+			// os.homedir() on Windows reads USERPROFILE, not HOME: without this the
+			// default sink resolves the real profile (see runScenario above).
+			USERPROFILE: home,
+			PI_CONFIG_DIR: ".omp",
+			PI_CONFIG_ROOT: redirectedRoot,
+			OMP_PROFILE: "",
+			PI_PROFILE: "",
+			XDG_DATA_HOME: "",
+			XDG_STATE_HOME: "",
+			XDG_CACHE_HOME: "",
+			PI_TEST_RUNTIME: "1",
+			...overrides,
+		};
+		// `undefined` means "unset this key": the parent shell may carry the value.
+		for (const key of Object.keys(env)) {
+			if (env[key] === undefined) delete env[key];
+		}
+		const proc = Bun.spawn([process.execPath, probePath, reportPath], {
+			cwd: path.resolve(import.meta.dir, "../../.."),
+			env,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+		expect(exitCode, stderr).toBe(0);
+		expect(stdout).toBe("");
+		const report = JSON.parse(await fs.readFile(reportPath, "utf8")) as { logsDir: string; files: string[] };
+		return { home, redirectedRoot, logsDir: report.logsDir, files: report.files };
+	}
+
+	test("writes nothing into the unredirected root from a test runtime", async () => {
+		const result = await runSinkProbe({});
+		expect(result.logsDir).toBe(path.join(result.home, ".omp", "logs"));
+		expect(result.files).toEqual([]);
+	});
+
+	test("still writes when the root is redirected", async () => {
+		const result = await runSinkProbe({}, { redirectRoot: true });
+		expect(result.logsDir).toBe(path.join(result.redirectedRoot as string, "logs"));
+		expect(await logFileNames(result.logsDir)).toHaveLength(1);
+	});
+
+	test("still writes for a real (non-test) process", async () => {
+		const result = await runSinkProbe({ PI_TEST_RUNTIME: undefined, NODE_ENV: "production", BUN_ENV: "" });
+		expect(result.logsDir).toBe(path.join(result.home, ".omp", "logs"));
+		expect(await logFileNames(result.logsDir)).toHaveLength(1);
+	});
+});
