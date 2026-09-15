@@ -1,14 +1,16 @@
 /**
  * Centralized path helpers for omp config directories.
  *
- * Uses PI_CONFIG_DIR (default ".omp") for the config root and
- * PI_CODING_AGENT_DIR to override the agent directory.
+ * Uses PI_CONFIG_DIR (default ".omp") for the config root,
+ * PI_CONFIG_ROOT for a full config-root path, and PI_CODING_AGENT_DIR to
+ * override the agent directory.
  *
- * On Linux, if XDG_DATA_HOME / XDG_STATE_HOME / XDG_CACHE_HOME environment
- * variables are set, paths are redirected to XDG-compliant locations under
- * $XDG_*_HOME/omp/. This requires running `omp config migrate` first to
- * move data to the new locations. No filesystem existence checks are performed
- * — if the env var is set, omp trusts that the migration has been done.
+ * On Linux and macOS, if XDG_DATA_HOME / XDG_STATE_HOME / XDG_CACHE_HOME
+ * environment variables are set and the matching $XDG_*_HOME/omp root already
+ * exists, paths are redirected to XDG-compliant locations under it. Run
+ * `omp config init-xdg` to create those roots before the env vars take effect.
+ * `PI_CONFIG_ROOT` pins every path under one directory on any platform and
+ * therefore wins over the per-category XDG redirects.
  */
 
 import * as fs from "node:fs";
@@ -107,9 +109,19 @@ function readProfileFromEnvSafe(): string | undefined {
 	}
 }
 
-/** Profile-independent config root (~/.omp), shared by every omp profile. */
+/**
+ * Profile-independent config root (~/.omp), or the `PI_CONFIG_ROOT` override.
+ *
+ * `PI_CONFIG_ROOT` is a full-path override (`~`-expanded, absolute; a blank or
+ * relative value is ignored — see {@link resolveDirOverride}) that replaces the
+ * home-joined root on every platform. It backs every path category, so pinning
+ * it keeps an entire omp tree — data (`stats.db`), state (`logs/`), cache
+ * (`cache/`) — inside one sandbox. Windows has neither XDG nor a `HOME` that
+ * `os.homedir()` honors, so without this key a child process cannot redirect
+ * its root and writes into the real `%USERPROFILE%\.omp`.
+ */
 export function getBaseConfigRoot(): string {
-	return path.join(os.homedir(), getConfigDirName());
+	return resolveDirOverride(process.env.PI_CONFIG_ROOT) ?? path.join(os.homedir(), getConfigDirName());
 }
 
 function getProfileConfigRoot(profile: string | undefined): string {
@@ -346,10 +358,16 @@ class DirResolver {
 		// the earlier state. Pinning on the profile path means a profile's location
 		// is decided at first activation and stays put until the user explicitly
 		// migrates it (e.g. by mkdir'ing the XDG profile dir).
+		//
+		// `PI_CONFIG_ROOT` pins the whole tree (see getBaseConfigRoot), so it
+		// outranks the per-category XDG redirects: honoring XDG underneath a
+		// pinned root would silently split data/state/cache out of the sandbox
+		// that asked for one directory.
 		let xdgData: string | undefined;
 		let xdgState: string | undefined;
 		let xdgCache: string | undefined;
-		if ((process.platform === "linux" || process.platform === "darwin") && isDefault) {
+		const pinnedRoot = resolveDirOverride(process.env.PI_CONFIG_ROOT);
+		if (!pinnedRoot && (process.platform === "linux" || process.platform === "darwin") && isDefault) {
 			const resolveIf = (envVar: string) => {
 				const value = process.env[envVar];
 				if (!value) return undefined;
@@ -647,12 +665,13 @@ export function getRemoteDir(): string {
  * Expand a leading `~` and require an absolute result. Returns `undefined` for
  * empty/whitespace input or a path that is still relative after expansion.
  *
- * A worktree base is process-global and consumed by both creation
- * (PR checkout, task isolation) and cleanup (`omp worktree`). A relative value
- * would resolve against whatever cwd happened to launch `omp`, so checkout and
- * cleanup could disagree — we refuse it rather than silently bind it to cwd.
+ * Both consumers (`OMP_WORKTREE_DIR`, `PI_CONFIG_ROOT`) name a process-global
+ * directory that creation, cleanup, and read paths must agree on. A relative
+ * value would resolve against whatever cwd happened to launch the process, so
+ * the same override could name two different directories — we refuse it rather
+ * than silently bind it to cwd.
  */
-function resolveWorktreeBase(value: string | undefined): string | undefined {
+function resolveDirOverride(value: string | undefined): string | undefined {
 	const trimmed = value?.trim();
 	if (!trimmed) return undefined;
 	let p = trimmed;
@@ -669,13 +688,13 @@ let worktreesDirOverride: string | undefined;
  * `worktree.base` setting in coding-agent; pass `undefined`/empty to clear and
  * fall back to `OMP_WORKTREE_DIR` or the `~/.omp/wt` default.
  *
- * `~` is expanded and a relative path is rejected (see {@link resolveWorktreeBase}).
+ * `~` is expanded and a relative path is rejected (see {@link resolveDirOverride}).
  * Returns the absolute path that took effect, or `undefined` if the input was
  * cleared or rejected — callers can warn on a non-empty input that returns
  * `undefined`.
  */
 export function setWorktreesDir(dir: string | undefined): string | undefined {
-	worktreesDirOverride = resolveWorktreeBase(dir);
+	worktreesDirOverride = resolveDirOverride(dir);
 	return worktreesDirOverride;
 }
 
@@ -687,7 +706,7 @@ export function setWorktreesDir(dir: string | undefined): string | undefined {
  * ignored and resolution falls through.
  */
 export function getWorktreesDir(): string {
-	return resolveWorktreeBase(process.env.OMP_WORKTREE_DIR) ?? worktreesDirOverride ?? dirs.rootSubdir("wt", "data");
+	return resolveDirOverride(process.env.OMP_WORKTREE_DIR) ?? worktreesDirOverride ?? dirs.rootSubdir("wt", "data");
 }
 
 /** Get the SSH control socket directory (~/.omp/ssh-control). */

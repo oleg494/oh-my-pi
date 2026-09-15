@@ -12,6 +12,9 @@
 ### Fixed
 
 - Fixed a startup crash when PI_TIMING profiled modules loaded via require() or TypeScript declaration assets.
+- `PI_TIMING` module-load profiling no longer crashes startup on `require()`d modules or `.d.ts` text assets.
+### Added
+- Added `PI_CONFIG_ROOT`: a full config-root path override that is `~`-expanded and must be absolute (a blank or relative value is ignored), applies on every platform, and pins every OMP path — data, state, and cache — under one directory, so it wins over the `XDG_*_HOME` category redirects. Windows previously had no key that could relocate the config root: `os.homedir()` ignores `HOME` there and the XDG redirects are macOS/Linux-only, so an isolated child process resolved `stats.db`, `logs/`, and the rest into the real `%USERPROFILE%\.omp`.
 
 ## [18.2.5] - 2026-09-17
 

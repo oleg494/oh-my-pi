@@ -5,12 +5,18 @@ import * as path from "node:path";
 import {
 	__resetDirsFromEnvForTests,
 	getActiveProfile,
+	getAgentDir,
 	getComposerCacheDir,
 	getConfigDirName,
+	getConfigRootDir,
 	getDocumentConversionCacheDir,
+	getHistoryDbPath,
+	getLogsDir,
 	getMarketplacesRegistryPath,
 	getProfileRootDir,
+	getPuppeteerDir,
 	getSecretPlaceholderKeyPath,
+	getStatsDbPath,
 	setAgentDir,
 } from "@oh-my-pi/pi-utils/dirs";
 import { Snowflake } from "@oh-my-pi/pi-utils/snowflake";
@@ -190,5 +196,140 @@ describe("legacy file adoption on XDG paths", () => {
 		activateTempHome({});
 		expect(getSecretPlaceholderKeyPath()).toBe(path.join(tempRoot, ".omp", "agent", "secret-placeholder.key"));
 		expect(getMarketplacesRegistryPath()).toBe(path.join(tempRoot, ".omp", "marketplaces.json"));
+	});
+});
+
+describe("PI_CONFIG_ROOT config-root override", () => {
+	let tempRoot = "";
+	let originalPiConfigRoot: string | undefined;
+	let originalPiConfigDir: string | undefined;
+	let originalPiCodingAgentDir: string | undefined;
+	let originalOmpProfile: string | undefined;
+	let originalPiProfile: string | undefined;
+	let originalXdgDataHome: string | undefined;
+	let originalXdgStateHome: string | undefined;
+	let originalXdgCacheHome: string | undefined;
+	let homedirSpy: Mock<() => string> | undefined;
+
+	beforeEach(async () => {
+		originalPiConfigRoot = process.env.PI_CONFIG_ROOT;
+		originalPiConfigDir = process.env.PI_CONFIG_DIR;
+		originalPiCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+		originalOmpProfile = process.env.OMP_PROFILE;
+		originalPiProfile = process.env.PI_PROFILE;
+		originalXdgDataHome = process.env.XDG_DATA_HOME;
+		originalXdgStateHome = process.env.XDG_STATE_HOME;
+		originalXdgCacheHome = process.env.XDG_CACHE_HOME;
+		tempRoot = path.join(os.tmpdir(), "pi-utils-config-root", Snowflake.next());
+		await fs.mkdir(tempRoot, { recursive: true });
+	});
+
+	afterEach(async () => {
+		homedirSpy?.mockRestore();
+		homedirSpy = undefined;
+		restoreEnv("PI_CONFIG_ROOT", originalPiConfigRoot);
+		restoreEnv("PI_CONFIG_DIR", originalPiConfigDir);
+		restoreEnv("PI_CODING_AGENT_DIR", originalPiCodingAgentDir);
+		restoreEnv("OMP_PROFILE", originalOmpProfile);
+		restoreEnv("PI_PROFILE", originalPiProfile);
+		restoreEnv("XDG_DATA_HOME", originalXdgDataHome);
+		restoreEnv("XDG_STATE_HOME", originalXdgStateHome);
+		restoreEnv("XDG_CACHE_HOME", originalXdgCacheHome);
+		__resetDirsFromEnvForTests();
+		await fs.rm(tempRoot, { recursive: true, force: true });
+	});
+
+	/**
+	 * Pin the config root at `root` and rebuild the resolver, clearing every other
+	 * directory-affecting key so the assertions see only `PI_CONFIG_ROOT`.
+	 */
+	function activateConfigRoot(root: string): void {
+		process.env.PI_CONFIG_ROOT = root;
+		delete process.env.PI_CONFIG_DIR;
+		delete process.env.PI_CODING_AGENT_DIR;
+		delete process.env.OMP_PROFILE;
+		delete process.env.PI_PROFILE;
+		delete process.env.XDG_DATA_HOME;
+		delete process.env.XDG_STATE_HOME;
+		delete process.env.XDG_CACHE_HOME;
+		__resetDirsFromEnvForTests();
+	}
+
+	it("routes the config root, agent dir, and every path category under PI_CONFIG_ROOT", () => {
+		const root = path.join(tempRoot, "cfg");
+		activateConfigRoot(root);
+
+		expect(getConfigRootDir()).toBe(root);
+		expect(getAgentDir()).toBe(path.join(root, "agent"));
+		// data
+		expect(getStatsDbPath()).toBe(path.join(root, "stats.db"));
+		expect(getHistoryDbPath()).toBe(path.join(root, "agent", "history.db"));
+		// state
+		expect(getLogsDir()).toBe(path.join(root, "logs"));
+		// cache
+		expect(getPuppeteerDir()).toBe(path.join(root, "puppeteer"));
+		expect(getComposerCacheDir()).toBe(path.join(root, "agent", "cache", "composer"));
+		expect(getDocumentConversionCacheDir()).toBe(path.join(root, "agent", "cache", "document-conversions"));
+	});
+
+	it("pins named-profile roots under PI_CONFIG_ROOT", () => {
+		const root = path.join(tempRoot, "cfg");
+		activateConfigRoot(root);
+
+		expect(getProfileRootDir("work")).toBe(path.join(root, "profiles", "work"));
+		expect(getActiveProfile()).toBeUndefined();
+	});
+
+	it("ignores a relative or blank PI_CONFIG_ROOT", () => {
+		homedirSpy = spyOn(os, "homedir").mockReturnValue(tempRoot);
+
+		process.env.PI_CONFIG_ROOT = "relative/root";
+		delete process.env.PI_CONFIG_DIR;
+		delete process.env.PI_CODING_AGENT_DIR;
+		delete process.env.OMP_PROFILE;
+		delete process.env.PI_PROFILE;
+		__resetDirsFromEnvForTests();
+		expect(getConfigRootDir()).toBe(path.join(tempRoot, ".omp"));
+		expect(getStatsDbPath()).toBe(path.join(tempRoot, ".omp", "stats.db"));
+
+		process.env.PI_CONFIG_ROOT = "   ";
+		__resetDirsFromEnvForTests();
+		expect(getConfigRootDir()).toBe(path.join(tempRoot, ".omp"));
+	});
+
+	it("expands a leading ~ in PI_CONFIG_ROOT", () => {
+		homedirSpy = spyOn(os, "homedir").mockReturnValue(tempRoot);
+		process.env.PI_CONFIG_ROOT = "~/pinned";
+		delete process.env.PI_CONFIG_DIR;
+		delete process.env.PI_CODING_AGENT_DIR;
+		delete process.env.OMP_PROFILE;
+		delete process.env.PI_PROFILE;
+		__resetDirsFromEnvForTests();
+
+		expect(getConfigRootDir()).toBe(path.join(tempRoot, "pinned"));
+		expect(getStatsDbPath()).toBe(path.join(tempRoot, "pinned", "stats.db"));
+	});
+
+	it("beats XDG category redirects so a pinned root stays one tree", async () => {
+		if (process.platform === "win32") return;
+		const xdgData = path.join(tempRoot, "xdg-data");
+		const xdgState = path.join(tempRoot, "xdg-state");
+		// Both XDG roots exist, which is what makes the resolver adopt them.
+		await fs.mkdir(path.join(xdgData, "omp"), { recursive: true });
+		await fs.mkdir(path.join(xdgState, "omp"), { recursive: true });
+		homedirSpy = spyOn(os, "homedir").mockReturnValue(tempRoot);
+
+		const root = path.join(tempRoot, "cfg");
+		process.env.PI_CONFIG_ROOT = root;
+		process.env.XDG_DATA_HOME = xdgData;
+		process.env.XDG_STATE_HOME = xdgState;
+		delete process.env.PI_CONFIG_DIR;
+		delete process.env.PI_CODING_AGENT_DIR;
+		delete process.env.OMP_PROFILE;
+		delete process.env.PI_PROFILE;
+		__resetDirsFromEnvForTests();
+
+		expect(getStatsDbPath()).toBe(path.join(root, "stats.db"));
+		expect(getLogsDir()).toBe(path.join(root, "logs"));
 	});
 });

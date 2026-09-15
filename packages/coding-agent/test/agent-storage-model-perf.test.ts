@@ -240,11 +240,8 @@ describe("AgentStorage model perf aggregates", () => {
 			HOME: homeDir,
 			OMP_PROFILE: "",
 			PI_CODING_AGENT_DIR: agentDir,
+			PI_CONFIG_ROOT: tempDir.join("config-root"),
 			PI_PROFILE: "",
-			XDG_CACHE_HOME: tempDir.join("xdg-cache"),
-			XDG_CONFIG_HOME: tempDir.join("xdg-config"),
-			XDG_DATA_HOME: tempDir.join("xdg-data"),
-			XDG_STATE_HOME: tempDir.join("xdg-state"),
 		};
 		const exiting = await runProbe(
 			[
